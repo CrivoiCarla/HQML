@@ -73,14 +73,14 @@ Although a GPU was available, the experiments do **not rely on GPU acceleration*
 The experiments were designed to run in a standard Python environment using the dependencies listed in `requirements.txt`.
 
 A typical execution environment includes:
-
 * Python 3.9 or newer
-* PyTorch
-* NumPy
-* scikit-learn
-* torchvision
-* matplotlib
-* tqdm
+* PyTorch (`torch==2.12.0`)
+* torchvision (`torchvision==0.27.0`)
+* NumPy (`numpy==2.4.6`)
+* scikit-learn (`scikit-learn==1.9.0`)
+* PennyLane (`pennylane==0.45.0`, `pennylane_lightning==0.45.0`) — for building and simulating the variational quantum circuits
+* pandas (`pandas==3.0.3`)
+* scipy (`scipy==1.17.1`)
 * additional dependencies listed in `requirements.txt`
 
 To ensure reproducibility, we recommend creating a clean virtual environment before installing the required packages.

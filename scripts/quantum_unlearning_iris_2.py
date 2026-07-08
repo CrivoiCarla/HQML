@@ -8,54 +8,63 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple
 
-# Torch & sklearn
+# PyTorch framework for learning deep representations and gradient propagation
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 
+# Scikit-learn database management and evaluation parameters
 from sklearn.datasets import load_iris
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import roc_auc_score
 
-# PennyLane
+# PennyLane tools for building intermediate quantum-classical modules
 import pennylane as qml
 from pennylane.qnn import TorchLayer
 
-# ----------------------------
-# Global config & utilities
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Global Config & Reproducibility Settings
+# -----------------------------------------------------------------------------
 SEED = 0
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
+# Unique output repository folder for this iteration of deep classical head checks
 OUT_DIR = "ql_unlearning_outputs_2"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-DEVICE_NAME = "default.qubit"     # change to "default.mixed" if enabling noise
-ENABLE_NOISE = False               # toggle noise simulation
-NOISE_P = 0.02                     # depolarizing prob if ENABLE_NOISE
+DEVICE_NAME = "default.qubit"     # Use standard statevector device for precise expectation value calculation
+ENABLE_NOISE = False               # Switch to activate density matrix channels
+NOISE_P = 0.02                     # Depolarizing probability index for simulated open quantum nodes
 
-N_QUBITS = 4
-N_CLASSES = 3
-BATCH = 32
-LR = 1e-2
-EPOCHS_TEACHER = 100
-DEFAULT_Q_LAYERS = 6
+# Hyperparameters
+N_QUBITS = 4                       # Number of tracking qubits corresponding to load features
+N_CLASSES = 3                      # Iris taxonomy class divisions
+BATCH = 32                         # Mini-batch tracking size
+LR = 1e-2                          # Optimization base step scale
+EPOCHS_TEACHER = 100               # Teacher training epoch threshold
+DEFAULT_Q_LAYERS = 6               # Heightened number of quantum layers for increased variational depth
 
-# ----------------------------
-# Data loading & splits
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Classification Dataset Loaders & Partitions
+# -----------------------------------------------------------------------------
 def load_data():
+    """
+    Loads and MinMax pre-processes the baseline classical Iris floral measurements,
+    mapping dimensions to standard angles in range [-pi, pi] to support quantum gates.
+    """
     X, y = load_iris(return_X_y=True)
-    # scale to [-pi, pi] for angle encoding
     scaler = MinMaxScaler(feature_range=(-np.pi, np.pi))
     X = scaler.fit_transform(X)
     return X, y
 
 def to_tensors(X, y=None):
+    """
+    Translates classical representations to PyTorch tensors.
+    """
     X_t = torch.tensor(X, dtype=torch.float32)
     if y is None:
         return X_t
@@ -63,6 +72,9 @@ def to_tensors(X, y=None):
     return X_t, y_t
 
 def make_loaders(X_train, y_train, X_test, y_test, batch=BATCH):
+    """
+    Bundles the arrays into tensor streams.
+    """
     train_ds = TensorDataset(torch.tensor(X_train, dtype=torch.float32),
                              torch.tensor(y_train, dtype=torch.long))
     test_ds = TensorDataset(torch.tensor(X_test, dtype=torch.float32),
@@ -72,18 +84,23 @@ def make_loaders(X_train, y_train, X_test, y_test, batch=BATCH):
     return train_loader, test_loader
 
 def split_scenarios(X, y, subset_rate=0.02):
-    # Main split train/test
+    """
+    Subdivides dataset to create our main training partitions and scenarios:
+      1. Scenario A: A small proportion of samples (2%) represents forgotten personal data.
+      2. Scenario B: An entire class slice (Class 0) is targeted for full-class deletion.
+    """
+    # Main split train/test partition (80% train / 20% test with label stratification preservation)
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.2, random_state=SEED, stratify=y
     )
-    # Scenario A: 2% subset as forget (UP privacy)
+    # Scenario A: Pull 2% subset as forget data points (User Privacy unlearning)
     X_tr_A, X_df_A, y_tr_A, y_df_A = train_test_split(
         X_tr, y_tr, test_size=subset_rate, random_state=SEED, stratify=y_tr
     )
-    # retained for A is the rest of the train after removing Df_A
+    # The remaining train instances serve as the retention dataset for Scenario A
     X_dr_A, y_dr_A = X_tr_A, y_tr_A
 
-    # Scenario B: full-class forget (choose one class deterministically, e.g., class 0)
+    # Scenario B: Deterministic elimination of Class 0 (class concept deletion)
     mask_class0 = (y_tr == 0)
     X_df_B = X_tr[mask_class0]
     y_df_B = y_tr[mask_class0]
@@ -92,10 +109,14 @@ def split_scenarios(X, y, subset_rate=0.02):
 
     return (X_dr_A, y_dr_A, X_df_A, y_df_A, X_te, y_te), (X_dr_B, y_dr_B, X_df_B, y_df_B, X_te, y_te)
 
-# ----------------------------
-# Quantum model definition
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Deep Quantum Model Definition (PennyLane & Deeper Classical Head)
+# -----------------------------------------------------------------------------
 def make_device():
+    """
+    Initializes standard quantum simulation devices.
+    Uses 'default.mixed' for open noise analysis blocks if enabled.
+    """
     if ENABLE_NOISE:
         dev = qml.device("default.mixed", wires=N_QUBITS, shots=None)
     else:
@@ -103,20 +124,30 @@ def make_device():
     return dev
 
 def noise_block():
+    """
+    Simulates physical depolarizing errors on qubits.
+    """
     if ENABLE_NOISE:
         for w in range(N_QUBITS):
             qml.DepolarizingChannel(NOISE_P, wires=w)
 
 def qnode_def(dev):
+    """
+    Standard PennyLane Quantum Node setting:
+      - Angle Encoding phase using composite Euler rotations RX, RY, RZ
+      - Variational Layers with arbitrary single qubit rotation and circular CZ entanglement.
+      - Measures output Z expectation values on all available wires.
+    """
     @qml.qnode(dev, interface="torch")
     def qnode(inputs, weights):
-        # Angle encoding with RX, RY, RZ for each of 4 features
+        # 1. Feature injection circuit
         for w, x in enumerate(inputs):
             qml.RX(x, wires=w)
             qml.RY(x, wires=w)
             qml.RZ(x, wires=w)
         noise_block()
-        # L variational layers + CZ ring entanglement
+        
+        # 2. Variational parameterized blocks repeating over L layers
         L = weights.shape[0]
         for l in range(L):
             for w in range(N_QUBITS):
@@ -127,19 +158,27 @@ def qnode_def(dev):
                 qml.CZ(wires=[w, w + 1])
             qml.CZ(wires=[N_QUBITS - 1, 0])
             noise_block()
-        # Expectation values → 4 real numbers
+            
+        # 3. Measurement phase
         return [qml.expval(qml.PauliZ(w)) for w in range(N_QUBITS)]
     return qnode
 
 class HybridQCNN(nn.Module):
+    """
+    Hybrid Classical-Quantum network using TorchLayer integration.
+    This model variant implements a MUCH deeper classical head to process expectations:
+       QNode Outputs -> Linear(4->32) -> BatchNorm -> ELU -> Linear(32->32) 
+                     -> BatchNorm -> ELU -> Linear(32->16) -> Dropout -> ELU -> Linear(16->Classes)
+    """
     def __init__(self, layers=DEFAULT_Q_LAYERS):
         super().__init__()
         dev = make_device()
         qnode = qnode_def(dev)
+        # Deep quantum parameters setup (6 layers typical)
         weight_shapes = {"weights": (layers, 3, N_QUBITS)}
         self.q_layer = TorchLayer(qnode, weight_shapes)
 
-        # Cap clasic mai adânc
+        # Deeper classical feedforward mapping head
         self.fc1 = nn.Linear(N_QUBITS, 32)
         self.bn1 = nn.BatchNorm1d(32)
         self.fc2 = nn.Linear(32, 32)
@@ -147,11 +186,14 @@ class HybridQCNN(nn.Module):
         self.fc3 = nn.Linear(32, 16)
         self.dropout = nn.Dropout(0.2)
         self.fc4 = nn.Linear(16, N_CLASSES)
-        self.elu = nn.ELU()
+        self.elu = nn.ELU()                    # Uses Exponential Linear Unit activation functions
 
     def forward(self, x):
+        # Accumulate expectation values from quantum simulator
         outs = [self.q_layer(sample) for sample in x]
         q_out = torch.stack(outs)
+        
+        # Stream computed records down key classical normalization blocks
         x = self.elu(self.bn1(self.fc1(q_out)))
         x = self.elu(self.bn2(self.fc2(x)))
         x = self.dropout(self.elu(self.fc3(x)))
@@ -240,10 +282,16 @@ def mia_auc_confidence(model, members_loader, nonmembers_loader) -> float:
         auc = float("nan")
     return float(auc)
 
-# =========================
-# Early Stopping utilities
-# =========================
+# =============================================================================
+# Early Stopping (ES) Utilities & Optimization Mechanics
+# =============================================================================
 class EarlyStopper:
+    """
+    Tracks validation performance metric (e.g. classification accuracy) over consecutive epochs.
+    Triggers early termination sequence if accuracy fails to improve beyond a given threshold
+    ('min_delta') across a window of predefined epochs ('patience').
+    Saves a deep copy of the high-watermark state dict in memory to avoid post-convergence drift.
+    """
     def __init__(self, patience=15, min_delta=0.0, best_is_max=True):
         self.patience = patience
         self.min_delta = min_delta
@@ -254,27 +302,42 @@ class EarlyStopper:
         self.best_state = None
 
     def _is_better(self, val):
+        """
+        Determines if the new evaluation value is strictly superior to the previous best,
+        accounting for min_delta depending on optimization objectives (max accuracy vs min loss).
+        """
         if self.best_val is None:
             return True
         if self.best_is_max:
+            # Better means value is higher by at least min_delta
             return (val - self.best_val) > self.min_delta
         else:
+            # Better means value is lower by at least min_delta
             return (self.best_val - val) > self.min_delta
 
     def step(self, val, model, epoch):
+        """
+        Updates trackers. Captures current state dictionary clone if objective improves.
+        Returns (stop_status, improved_flag).
+        """
         if self._is_better(val):
             self.best_val = val
             self.best_epoch = epoch
             self.epochs_no_improve = 0
+            # Clone model parameter values (detaching them from computation graphs)
             self.best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             improved = True
         else:
             self.epochs_no_improve += 1
             improved = False
+        # Stop flag triggers when patience count threshold is crossed
         stop = self.epochs_no_improve >= self.patience
         return stop, improved
 
 def _save_json(path, obj):
+    """
+    Helper function to serialize logs as formatted JSON objects.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
@@ -290,6 +353,11 @@ def train_with_es(
     min_delta=0.0,
     save_every_epoch=True,
 ):
+    """
+    Generic early-stopping training wrapper that supervises model optimization over multiple epochs.
+    Executes 'train_epoch_fn' (which encapsulates dataset streaming, opt.zero_grad, backpropagation and weights update),
+    tracks performance on 'eval_loader', records epoch-level checkpoints, and registers run metrics inside a JSON log.
+    """
     t0 = time.perf_counter()
     stopper = EarlyStopper(patience=patience, min_delta=min_delta, best_is_max=best_is_max)
 
@@ -297,15 +365,19 @@ def train_with_es(
     per_epoch_paths = []
 
     for ep in range(1, epochs + 1):
+        # Perform training gradient steps for the epoch
         train_epoch_fn(ep)
 
+        # Gauge current epoch model quality on evaluation loader
         val_acc = evaluate_acc(model, eval_loader)
 
+        # Periodically save backup epoch-specific states on disk
         if save_every_epoch:
             ep_path = os.path.join(OUT_DIR, f"{tag}_ep{ep}.pth")
             save_model(model, ep_path, extra={"epoch": ep, "val_acc": val_acc, "tag": tag})
             per_epoch_paths.append(ep_path)
 
+        # Query early stopper update status
         stop, improved = stopper.step(val_acc, model, ep)
         print(f"[{tag}] Ep {ep:02d} | ValAcc {val_acc*100:.2f}% "
               f"{'(best)' if improved else ''} | no_improve={stopper.epochs_no_improve}/{patience}")
@@ -313,11 +385,13 @@ def train_with_es(
             print(f"[{tag}] Early stopping at epoch {ep} (best @ {stopper.best_epoch}).")
             break
 
+    # Restore the historical high-watermark weights mapping
     if stopper.best_state is not None:
         model.load_state_dict(stopper.best_state)
         save_model(model, best_path, extra={"epoch": stopper.best_epoch, "best_val_acc": stopper.best_val, "tag": tag})
 
     elapsed = time.perf_counter() - t0
+    # Package telemetry parameters for logging
     log = {
         "tag": tag,
         "epochs_requested": epochs,
@@ -341,6 +415,10 @@ def train_with_es(
 # ----------------------------
 def train_teacher(X_train, y_train, X_test, y_test, layers=DEFAULT_Q_LAYERS, epochs=EPOCHS_TEACHER, lr=LR, tag="teacher",
                   patience=15, min_delta=0.0):
+    """
+    Initializes a new HybridQCNN instance and optimizes its parameters standardly from scratch.
+    This acts as our starting 'Original' or 'Teacher' model, which subsequently undergoes unlearning.
+    """
     model = HybridQCNN(layers=layers)
     criterion = nn.CrossEntropyLoss()
     opt = optim.Adam(model.parameters(), lr=lr)
@@ -457,15 +535,20 @@ def method_neggrad_plus(model, retain_loader, forget_loader, epochs=10, lr=LR, a
 def method_cf_k(model, forget_loader, k=1, epochs=10, lr=LR, tag="CFk",
                 eval_loader=None, patience=15, min_delta=0.0):
     """
-    CF-k (Classical Freezing): îngheață primele k straturi (de la intrare spre ieșire).
-    Include q_layer, apoi capul clasic [fc1, fc2, fc3, fc4].
+    Implements Classifier Fine-tuning (CF-k) for Deeper head.
+    Freezes the early k layers of the network (e.g. quantum layers or low-level feature extraction)
+    and executes gradient ascent on the forget set strictly on the late layers.
+    Sequentially frozen arrays in layers lookup table: [q_layer, fc1, fc2, fc3, fc4].
     """
     model = copy.deepcopy(model)
+    # The layers array captures both the quantum encoder and all linear projection modules
     layers = [model.q_layer, model.fc1, model.fc2, model.fc3, model.fc4]
+    # Set gradient trackers to FALSE for any module ranking lower than index k
     for i, layer in enumerate(layers):
         for p in layer.parameters():
             p.requires_grad = not (i < k)
 
+    # Opt only operates over layers where gradient calculation remains enabled
     opt = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
@@ -485,17 +568,16 @@ def method_cf_k(model, forget_loader, k=1, epochs=10, lr=LR, tag="CFk",
 def method_eu_k(model, retain_loader, k=1, epochs=10, lr=LR, tag="EUk",
                 eval_loader=None, patience=15, min_delta=0.0):
     """
-    EU-k (Erase–Unlearn) pentru capul clasic adânc:
-      cap = [fc1: 4->32, fc2: 32->32, fc3: 32->16, fc4: 16->N_CLASSES]
-    Reinițializează ultimele k straturi în ordine inversă (de la ieșire spre intrare),
-    apoi re-antrenează pe Dr.
+    Implements EU-k re-initialization on Deep Head:
+    Erases weights belonging to the last k layers of the deep classical classifier, 
+    then optimizes parameters on the remaining retain dataset (Dr).
+      k = 1 -> reinitializes fc4 (16->N_CLASSES)
+      k = 2 -> reinitializes fc3 (32->16) + fc4
+      k = 3 -> reinitializes fc2 (32->32) + fc3 + fc4
+      k = 4 -> reinitializes fc1 (4->32)  + fc2 + fc3 + fc4
     """
     model = copy.deepcopy(model)
 
-    # k = 1 -> reinit fc4 (16->N_CLASSES)
-    # k = 2 -> reinit fc3 (32->16) + fc4
-    # k = 3 -> reinit fc2 (32->32) + fc3 + fc4
-    # k = 4 -> reinit fc1 (4->32)  + fc2 + fc3 + fc4
     if k >= 1:
         model.fc4 = nn.Linear(16, N_CLASSES)
     if k >= 2:
@@ -530,6 +612,12 @@ def method_eu_k(model, retain_loader, k=1, epochs=10, lr=LR, tag="EUk",
 def method_certified_unlearning(model, retain_loader, epochs=20, lr=LR,
                                 sigma=0.05, clip_norm=1.0, tag="Certified",
                                 eval_loader=None, patience=15, min_delta=0.0):
+    """
+    Implements Certified Unlearning.
+    Slightly perturbs the model over the retain set by executing clipped gradients
+    with added Gaussian noise, borrowing foundations from Differential Privacy (DP-SGD).
+    This mathematically guarantees that the processed parameters do not leak membership trace of forget elements.
+    """
     model = copy.deepcopy(model)
     criterion = nn.CrossEntropyLoss()
     opt = optim.Adam(model.parameters(), lr=lr)
@@ -540,7 +628,9 @@ def method_certified_unlearning(model, retain_loader, epochs=20, lr=LR,
             opt.zero_grad()
             loss = criterion(model(xb), yb)
             loss.backward()
+            # Bounding maximum sensitivity of model updates
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+            # Injecting direct Gaussian noise onto parameter gradient updates
             for p in model.parameters():
                 if p.grad is not None:
                     p.grad += sigma * torch.randn_like(p.grad)
@@ -552,6 +642,10 @@ def method_certified_unlearning(model, retain_loader, epochs=20, lr=LR,
 
 # === Q-MUL-inspired ===
 def build_similar_label_map(teacher_model, data_X, data_y) -> Dict[int, int]:
+    """
+    Builds label redirection mapping by sorting classes in order of maximum cosine similarity.
+    Calculates logit centroid coordinates for each target categories.
+    """
     teacher_model.eval()
     X_t = torch.tensor(data_X, dtype=torch.float32)
     y_t = torch.tensor(data_y, dtype=torch.long)
@@ -587,6 +681,13 @@ def build_similar_label_map(teacher_model, data_X, data_y) -> Dict[int, int]:
 def method_qmul(teacher_model, retain_loader, forget_loader, epochs=20,
                 lr=LR, alpha=1.0, tag="Q-MUL",
                 eval_loader=None, patience=15, min_delta=0.0):
+    """
+    Implements Q-MUL.
+    Steers predictions on forget set to most similar incorrect classes using the sim map,
+    using dynamic gradient norm weighting:
+      w = (||grad_retain|| / (||grad_forget|| + eps)) * alpha
+      Loss = Lr - w * Lf
+    """
     model = copy.deepcopy(teacher_model)
     criterion = nn.CrossEntropyLoss()
     opt = optim.Adam(model.parameters(), lr=lr)
@@ -603,23 +704,27 @@ def method_qmul(teacher_model, retain_loader, forget_loader, epochs=20,
     def _one_epoch(ep):
         model.train()
         for (xb_r, yb_r), (xb_f, yb_f) in zip(retain_loader, forget_loader):
-            # similar-labels for forget batch
+            # Target distraction target mapping
             yb_f_sim = yb_f.clone()
             for i in range(yb_f_sim.shape[0]):
                 yb_f_sim[i] = sim_map[int(yb_f_sim[i].item())]
 
-            # estimate gradient norms separately
+            # 1. Backpropagate retain loss individually to calculate gradient norm
             opt.zero_grad()
             Lr = criterion(model(xb_r), yb_r)
             Lr.backward(retain_graph=True)
             gnorm_r = torch.sqrt(sum([(p.grad.detach()**2).sum() for p in model.parameters() if p.grad is not None]) + eps).item()
 
+            # 2. Backpropagate forget distracting loss individually to calculate gradient norm
             model.zero_grad(set_to_none=True)
             Lf = criterion(model(xb_f), yb_f_sim)
             Lf.backward(retain_graph=True)
             gnorm_f = torch.sqrt(sum([(p.grad.detach()**2).sum() for p in model.parameters() if p.grad is not None]) + eps).item()
 
+            # 3. Dynamic balance scaling configuration
             w = (gnorm_r / (gnorm_f + eps)) * alpha
+            
+            # 4. Joint contrastive step
             model.zero_grad(set_to_none=True)
             loss = Lr - w * Lf
             loss.backward()
@@ -629,14 +734,27 @@ def method_qmul(teacher_model, retain_loader, forget_loader, epochs=20,
                              best_is_max=True, patience=patience, min_delta=min_delta)
     return model
 
-# ------------- SCRUB -------------
+# -----------------------------------------------------------------------------
+# SCRUB Unlearning Method (Teacher-Student Distillation Setup)
+# -----------------------------------------------------------------------------
 def kl_torch(p_teacher: torch.Tensor, p_student: torch.Tensor, eps=1e-8):
+    """
+    Computes PyTorch tensor-based KL Divergence:
+      D_KL(p_teacher || p_student) = \sum p_t * log(p_t / p_s)
+    Determines how closely the student's probability outputs track the original teacher.
+    """
     p_teacher = torch.clamp(p_teacher, eps, 1.0)
     p_student = torch.clamp(p_student, eps, 1.0)
     return torch.sum(p_teacher * (torch.log(p_teacher) - torch.log(p_student)), dim=1).mean()
 
 def method_scrub(model_teacher, retain_loader, forget_loader, epochs=50, lr=LR, lam_r=1.0, lam_f=1.0, tag="SCRUB",
                  rewind=False, eval_loader=None, patience=15, min_delta=0.0):
+    """
+    Implements SCRUB Unlearning.
+    Features a teacher-student knowledge distillation approach with dual learning goals:
+      - Obey: Minimize student prediction KL-divergence from teacher on retain set (lam_r * L_obey)
+      - Disobey: Maximize student prediction KL-divergence from teacher on forget set (-lam_f * L_disobey)
+    """
     student = copy.deepcopy(model_teacher)
     opt = optim.Adam(student.parameters(), lr=lr)
 
@@ -673,13 +791,17 @@ def method_scrub(model_teacher, retain_loader, forget_loader, epochs=50, lr=LR, 
     #     student, _ = load_model(best_path_rewind, layers=DEFAULT_Q_LAYERS)
     return student
 
-#----------LCA------
+# -----------------------------------------------------------------------------
+# LCA Unlearning Method (Label Complement Augmentation Setup)
+# -----------------------------------------------------------------------------
 from itertools import cycle
 
 def make_label_complement_loader(forget_loader, n_classes=N_CLASSES, batch=BATCH, shuffle=True):
     """
-    Pentru fiecare (x, y) din Df, generează (x, c) pentru toate c != y.
-    Returnează un DataLoader cu aceste perechi replicate.
+    Given an aligned forget set, transforms each sample (x, y) into multiple distinct labels (x, c) 
+    for every available incorrect class index c != y.
+    This scattering allows the model to map forget samples towards non-target categories uniformly,
+    defusing specific confidence spikes without altering physical input elements.
     """
     Xs, Ys = [], []
     for xb, yb in forget_loader:
@@ -687,15 +809,18 @@ def make_label_complement_loader(forget_loader, n_classes=N_CLASSES, batch=BATCH
         Ys.append(yb)
     if len(Xs) == 0:
         raise ValueError("forget_loader este gol — nu pot construi complementul de etichete.")
-    X = torch.cat(Xs)                          # [N, D]
-    y = torch.cat(Ys)                          # [N]
+    X = torch.cat(Xs)                          # Concentrated inputs: [N, D]
+    y = torch.cat(Ys)                          # Concentrated labels: [N]
 
     N, D = X.shape
-    all_classes = torch.arange(n_classes).unsqueeze(0).repeat(N, 1)   # [N, C]
-    mask = (all_classes != y.unsqueeze(1))                            # [N, C]
-    y_comp = all_classes[mask].reshape(-1)                            # [N*(C-1)]
+    # Replicate classes grid across inputs
+    all_classes = torch.arange(n_classes).unsqueeze(0).repeat(N, 1)   # Shape: [N, C]
+    # Filter where class labels does not equal target class label
+    mask = (all_classes != y.unsqueeze(1))                            # Shape: [N, C]
+    y_comp = all_classes[mask].reshape(-1)                            # Flattened: [N * (C - 1)]
 
-    X_rep = X.unsqueeze(1).repeat(1, n_classes - 1, 1).reshape(-1, D) # [N*(C-1), D]
+    # Replicate physical inputs to match the expanded complement class list dimension
+    X_rep = X.unsqueeze(1).repeat(1, n_classes - 1, 1).reshape(-1, D) # Shape: [N * (C - 1), D]
 
     ds = TensorDataset(X_rep.float(), y_comp.long())
     return DataLoader(ds, batch_size=batch, shuffle=shuffle)
@@ -708,6 +833,12 @@ def method_label_complement_augmentation(teacher_model,
                                          beta=1.0,
                                          tag="LCA",
                                          eval_loader=None, patience=15, min_delta=0.0):
+    """
+    Implements Label Complement Augmentation (LCA).
+    Fine-tunes the model jointly with the standard Cross Entropy Loss on the retain set (D_r)
+    and complemented class labels on the forget set (D_c), diffusing the confidence profile:
+      Loss = CE(model(X_r), y_r) + beta * CE(model(X_c), y_c)
+    """
     model = copy.deepcopy(teacher_model)
     criterion = nn.CrossEntropyLoss()
     opt = optim.Adam(model.parameters(), lr=lr)
@@ -734,23 +865,40 @@ def method_label_complement_augmentation(teacher_model,
                              best_is_max=True, patience=patience, min_delta=min_delta)
     return model
 
-############# Adversarial–uniform (FGSM pe unghiuri) pentru Df
+# -----------------------------------------------------------------------------
+# ADV-UNIFORM Unlearning Method (Adversarial Input Perturbations with FGSM)
+# -----------------------------------------------------------------------------
 def fgsm_on_inputs(model, xb, eps=0.1, y_target_uniform=True):
+    """
+    Performs Fast Gradient Sign Method (FGSM) to adversarially perturb quantum input feature angles.
+    Generates inputs that maximally scramble predictions or shift distribution towards a target uniform state.
+    Inputs are clamped strictly to [-pi, pi] to respect valid physical quantum angle mapping.
+    """
     xb = xb.clone().detach().requires_grad_(True)
     logits = model(xb)
     probs = torch.softmax(logits, dim=1)
     if y_target_uniform:
+        # Uniform probability distribution targets
         U = torch.full_like(probs, 1.0 / probs.shape[1])
+        # Minimize KL divergence of student outputs from uniform distribution (maximizing uncertainty)
         loss = torch.sum(probs * (torch.log(probs + 1e-8) - torch.log(U + 1e-8)), dim=1).mean()
     else:
-        loss = -torch.distributions.Categorical(probs).entropy().mean()  # max entropie
+        # Maximizing output entropy: Loss is negative entropy
+        loss = -torch.distributions.Categorical(probs).entropy().mean()
     loss.backward()
+    # Apply standard adversarial step along gradient direction
     x_adv = xb + eps * xb.grad.sign()
     return torch.clamp(x_adv, -math.pi, math.pi).detach()
 
 def method_adv_uniform(teacher_model, retain_loader, forget_loader,
                        epochs=10, lr=LR, lam=1.0, eps=0.1, tag="ADVUNI",
                        eval_loader=None, patience=15, min_delta=0.0):
+    """
+    Implements Adversarial Uniform (ADV-UNIFORM) unlearning.
+    First constructs adversarial inputs x_adv from forget samples via FGSM, then minimizes
+    retain set cross-entropy combined with a penalty steering predictions on x_adv towards uniform distribution:
+      Loss = CE(model(X_r), y_r) + lam * KL(model(X_adv) || Uniform)
+    """
     model = copy.deepcopy(teacher_model)
     ce = nn.CrossEntropyLoss()
     opt = optim.Adam(model.parameters(), lr=lr)
@@ -770,13 +918,21 @@ def method_adv_uniform(teacher_model, retain_loader, forget_loader,
                              best_is_max=True, patience=patience, min_delta=min_delta)
     return model
 
-# ----------------------------
-# Evaluation wrapper
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Comprehensive Evaluation Suite & Reporting Wrapper
+# -----------------------------------------------------------------------------
 def evaluate_suite(method_name, model_unlearned, model_teacher, model_oracle,
                    loaders_dict, scenario_tag, csv_rows: List[Dict]):
     """
-    loaders_dict keys: retain, forget, test, mia_nonmembers (for subset scenario)
+    Fully evaluates the unlearned student model across relevant partitions and indicators:
+      1. Classification accuracy on Retain, Forget, and Test pools.
+      2. Performance drop/gain metrics relative to pre-trained original teacher state.
+      3. Similarity checks (KL divergence, JS divergence, decision agreement rate)
+         benchmarked against the retrained-from-scratch oracle baseline.
+      4. Membership Inference Attack (MIA) resilience analysis.
+      5. UQI (Unlearning Quality Index) equation:
+           UQI = ForgetDrop - 0.5 * (RetainDrop + TestDrop)
+         High UQI values indicate optimal unlearning (erased forget set memory with minimal retention loss).
     """
     retain_loader = loaders_dict["retain"]
     forget_loader = loaders_dict["forget"]

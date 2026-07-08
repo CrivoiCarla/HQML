@@ -113,8 +113,6 @@ Install the required dependencies:
 pip install -r requirements.txt
 ```
 
----
-
 ## Quick Start
 
 After installing the required dependencies, the experiments can be launched directly from the corresponding script in the `scripts/` folder.
@@ -132,6 +130,8 @@ An alternative/extended pipeline for the Iris dataset is also provided:
 ```bash
 python scripts/quantum_unlearning_iris_2.py
 ```
+
+`quantum_unlearning_iris_2.py` uses a deeper and more expressive hybrid quantum-classical model than `quantum_unlearning_iris.py`: a variational quantum circuit with more layers (6 vs. 2), and a larger classical head with additional layers, batch normalization, and dropout. The unlearning methods (e.g. `EU-k`, `CF-k`) are adapted to this deeper architecture, supporting finer-grained layer freezing/reinitialization. All other aspects of the pipeline (dataset, unlearning scenarios, and evaluation metrics) are identical between the two scripts.
 
 ## Estimated Execution Time
 
